@@ -1,8 +1,14 @@
+import os
 from configparser import ConfigParser
+
+from backports import configparser
 from bs4 import BeautifulSoup
 import pandas as pd
 import sqlalchemy as db
 from fuzzywuzzy import fuzz
+
+config_path = 'config.ini'
+config = configparser.ConfigParser()
 
 
 def read_mimosa_xml(engine):
@@ -117,15 +123,16 @@ def read_plcs_xml(engine):
 
 def connect_to_db():
     meta = db.MetaData()
-    # User information for SQL server is stored in config.ini
-    user_info = config_object["SQLSERVERCONFIG"]
+    config.read(config_path)
+    config_object = dict(config.items('SQLSERVERCONFIG'))
+    user_info = config_object
     engine = db.create_engine("mysql+pymysql://{user}:{pw}@localhost/{db}"
                            .format(user=format(user_info["user"]),
                                    pw=format(user_info["password"]),
                                    db=format(user_info["database"])))
     print('----Connected to DB----')
 
-    mimosa = db.Table(
+    db.Table(
         'mimosa',
         meta,
         db.Column('id_mimosa', db.Integer, primary_key=True),
@@ -134,7 +141,7 @@ def connect_to_db():
         db.Column('relationships', db.String(5000)),
     )
 
-    plcs = db.Table(
+    db.Table(
         'plcs',
         meta,
         db.Column('id_plcs', db.Integer, primary_key=True),
@@ -143,7 +150,7 @@ def connect_to_db():
         db.Column('relationships', db.String(5000)),
     )
 
-    similarity = db.Table(
+    db.Table(
         'similarity',
         meta,
         db.Column('id_sim', db.Integer, primary_key=True),
@@ -226,33 +233,30 @@ def relationship_matching(mimosa_df, plcs_df, similarity_df):
     return similarity_df
 
 
-def createConfig():
-    config_object = ConfigParser()
+def create_config():
+    if not os.path.exists(config_path):
+        config["THRESHOLDANDWEIGHTING"] = {
+            "Threshold": "40",
+            "Name Weighting": "65",
+            "Description Weighting": "23",
+            "Relationship Weighting": "12"
+        }
 
-    config_object["THRESHOLDANDWEIGHTING"] = {
-        "Threshold": "40",
-        "Name Weighting": "65",
-        "Description Weighting": "23",
-        "Relationship Weighting": "12"
-    }
+        config["SQLSERVERCONFIG"] = {
+            "User": "root",
+            "Password": "password",
+            "Host": "localhost",
+            "Database": "automatedmatching"
+        }
 
-    config_object["SQLSERVERCONFIG"] = {
-        "User": "root",
-        "Password": "alanna1",
-        "Database": "automatedmatching"
-    }
-
-    with open('config.ini', 'w') as conf:
-        config_object.write(conf)
-
-    config_object = ConfigParser()
-    config_object.read("config.ini")
-
-    return config_object
-
+        with open('config.ini', 'w') as conf:
+            config.write(conf)
+        print('Created config file')
+    else:
+        print('Skipped creation of config file')
 
 def weighting(similarity_df):
-    user_info = config_object["THRESHOLDANDWEIGHTING"]
+    user_info = config["THRESHOLDANDWEIGHTING"]
     name_weighting = float(user_info["name weighting"])
     description_weighting = float(user_info["description weighting"])
     relationship_weighting = float(user_info["relationship weighting"])
@@ -267,7 +271,7 @@ def weighting(similarity_df):
     similarity_df.to_sql('similarity', con=engine, if_exists='replace', chunksize=1000, index=False)
 
 
-config_object = createConfig()
+create_config()
 engine = connect_to_db()
 mimosa_df = read_mimosa_xml(engine)
 plcs_df = read_plcs_xml(engine)
