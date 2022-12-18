@@ -1,11 +1,13 @@
 import os
 from configparser import ConfigParser
-
+import lxml
 from backports import configparser
 from bs4 import BeautifulSoup
 import pandas as pd
 import sqlalchemy as db
 from fuzzywuzzy import fuzz
+from sentence_transformers import SentenceTransformer, util
+model = SentenceTransformer('all-MiniLM-L6-v2')
 
 config_path = 'config.ini'
 config = configparser.ConfigParser()
@@ -56,7 +58,7 @@ def read_mimosa_xml(engine):
             id_number += 1
 
     # Writes list to dataframe and stores in sql for easy retrieval of standard data including relationships, description.
-    mimosa_list = {'idMimosa': id_list, 'name': name_list, 'description': description_list, 'relationships': relationship_list}
+    mimosa_list = {'idMimosa': id_list, 'name_mimosa': name_list, 'description': description_list, 'relationships': relationship_list}
     mimosa_df = pd.DataFrame(mimosa_list)
     # Separates words in relationship column by comma for matching purposes
     mimosa_df['relationships'] = mimosa_df['relationships'].str.join(', ')
@@ -176,20 +178,25 @@ def name_match(mimosa_df, plcs_df):
     unique_id = 0
 
     plcs_name_list = plcs_df['name_plcs'].values.tolist()
-    mimosa_name_list = mimosa_df['name'].values.tolist()
+    mimosa_name_list = mimosa_df['name_mimosa'].values.tolist()
+
     for name_plcs in plcs_name_list:
+        embeddings1 = model.encode(name_plcs, convert_to_tensor=True, show_progress_bar=True)
         for name_mimosa in mimosa_name_list:
             # Fuzzy token_set_ratio used for name matches as it provides most accurate comparison
-            similarity_score = fuzz.token_set_ratio(name_mimosa, name_plcs)
-            if similarity_score >= threshold:
-                mimosa_list.append(name_mimosa)
-                plcs_list.append(name_plcs)
-                similarity_score_list.append(similarity_score)
-                unique_id += 1
-                id_list.append(unique_id)
+            # similarity_score = fuzz.token_set_ratio(name_mimosa, name_plcs)
+            embeddings2 = model.encode(name_mimosa, convert_to_tensor=True, show_progress_bar=True)
+            cosine_scores = util.cos_sim(embeddings1, embeddings2)
+
+            mimosa_list.append(name_mimosa)
+            plcs_list.append(name_plcs)
+            similarity_score_list.append(cosine_scores)
+            unique_id += 1
+            id_list.append(unique_id)
 
     similarity_list = {'id_sim': id_list, 'name_plcs': plcs_list, 'name_mimosa': mimosa_list, 'sim_name': similarity_score_list}
     similarity_df = pd.DataFrame(similarity_list)
+    print(similarity_df)
     ("----Name Matching Complete and Stored----")
 
     return similarity_df
@@ -255,20 +262,20 @@ def create_config():
     else:
         print('Skipped creation of config file')
 
-def weighting(similarity_df):
-    user_info = config["THRESHOLDANDWEIGHTING"]
-    name_weighting = float(user_info["name weighting"])
-    description_weighting = float(user_info["description weighting"])
-    relationship_weighting = float(user_info["relationship weighting"])
-    threshold = float(user_info["threshold"])
-
-    # Applies weighting to the original fuzzywuzzy scores, must be == 100 for accurate matches
-    similarity_df["weighted_similarity"] = similarity_df["sim_name"] * name_weighting / 100 + similarity_df["sim_description"] \
-                                           * description_weighting / 100 + similarity_df["sim_relationships"] * \
-                                           relationship_weighting /100
-    similarity_df = similarity_df[similarity_df.weighted_similarity >= threshold]
-
-    similarity_df.to_sql('similarity', con=engine, if_exists='replace', chunksize=1000, index=False)
+# def weighting(similarity_df):
+#     user_info = config["THRESHOLDANDWEIGHTING"]
+#     name_weighting = float(user_info["name weighting"])
+#     description_weighting = float(user_info["description weighting"])
+#     relationship_weighting = float(user_info["relationship weighting"])
+#     threshold = float(user_info["threshold"])
+#
+#     # Applies weighting to the original fuzzywuzzy scores, must be == 100 for accurate matches
+#     similarity_df["weighted_similarity"] = similarity_df["sim_name"] * name_weighting / 100 + similarity_df["sim_description"] \
+#                                            * description_weighting / 100 + similarity_df["sim_relationships"] * \
+#                                            relationship_weighting /100
+#     similarity_df = similarity_df[similarity_df.weighted_similarity >= threshold]
+#
+#     similarity_df.to_sql('similarity', con=engine, if_exists='replace', chunksize=1000, index=False)
 
 
 create_config()
@@ -278,4 +285,4 @@ plcs_df = read_plcs_xml(engine)
 similarity_df = name_match(mimosa_df, plcs_df)
 similarity_df = description_matching(mimosa_df, plcs_df, similarity_df)
 similarity_df = relationship_matching(mimosa_df, plcs_df, similarity_df)
-weighting(similarity_df)
+# weighting(similarity_df)
